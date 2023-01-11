@@ -1,26 +1,32 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.10;
+pragma solidity =0.8.10;
 
-import "../interfaces/IERC20.sol";
+import "../libraries/OwnableWithdrawable.sol";
 import "../libraries/TransferHelper.sol";
-import "@openzeppelin/contracts/access/Ownable.sol";
+import "../interfaces/IERC20.sol";
 
-contract AntfarmLinearSale is Ownable {
+contract AntfarmLinearSale is OwnableWithdrawable {
     address public immutable antfarmToken;
-    address public quoteToken;
+    uint256 public immutable startTime;
 
+    address public quoteToken;
     uint256 public lowerPrice;
     uint256 public higherPrice;
 
-    uint256 public constant INITIAL_RESERVE = 10 * 10**5 * 10**18; // 1M tokens
+    uint256 public constant INITIAL_RESERVE = 1_000_000 * 10**18;
 
     event Buy(address buyer, uint256 amount, uint256 cost);
+
+    error SaleHasNotStarted();
+    error SaleIsOver();
+    error CostLimitExceeded();
 
     constructor(
         address _antfarmToken,
         address _quoteToken,
         uint256 _lowerPrice,
-        uint256 _higherPrice
+        uint256 _higherPrice,
+        uint256 _startTime
     ) {
         require(_antfarmToken != address(0), "NULL_ATF_ADDRESS");
         require(_quoteToken != address(0), "NULL_QUOTE_ADDRESS");
@@ -28,11 +34,14 @@ contract AntfarmLinearSale is Ownable {
         quoteToken = _quoteToken;
         lowerPrice = _lowerPrice;
         higherPrice = _higherPrice;
+        startTime = _startTime;
     }
 
     function buyTokens(uint256 _amount, uint256 _maxCost) external {
+        if (startTime > block.timestamp) revert SaleHasNotStarted();
+
         uint256 reserve = IERC20(antfarmToken).balanceOf(address(this));
-        require(reserve > 0, "SALE_IS_OVER");
+        if (reserve == 0) revert SaleIsOver();
         if (reserve > INITIAL_RESERVE) {
             reserve = INITIAL_RESERVE;
         }
@@ -51,8 +60,9 @@ contract AntfarmLinearSale is Ownable {
 
         uint256 averagePrice = (startPrice + endPrice) / 2;
         uint256 totalCost = (_amount * averagePrice) /
-            10**IERC20(quoteToken).decimals();
-        require(totalCost <= _maxCost, "COST_LIMIT_EXCEDED");
+            10**IERC20(antfarmToken).decimals();
+
+        if (totalCost > _maxCost) revert CostLimitExceeded();
 
         TransferHelper.safeTransferFrom(
             quoteToken,
@@ -78,10 +88,10 @@ contract AntfarmLinearSale is Ownable {
             lowerPrice;
     }
 
-    function getAveragePriceForAmount(uint256 _amount)
+    function getCostForAmount(uint256 _amount)
         external
         view
-        returns (uint256 averagePrice)
+        returns (uint256 totalCost)
     {
         uint256 reserve = IERC20(antfarmToken).balanceOf(address(this));
         if (reserve > INITIAL_RESERVE) {
@@ -100,7 +110,10 @@ contract AntfarmLinearSale is Ownable {
             10**9 +
             lowerPrice;
 
-        averagePrice = (startPrice + endPrice) / 2;
+        uint256 averagePrice = (startPrice + endPrice) / 2;
+        totalCost =
+            (_amount * averagePrice) /
+            10**IERC20(antfarmToken).decimals();
     }
 
     function updateDetails(
@@ -111,14 +124,5 @@ contract AntfarmLinearSale is Ownable {
         quoteToken = _quoteToken;
         lowerPrice = _lowerPrice;
         higherPrice = _higherPrice;
-    }
-
-    function withdrawToken(address _token, uint256 _amount) external onlyOwner {
-        TransferHelper.safeTransfer(_token, owner(), _amount);
-    }
-
-    function withdrawTotalTokenBalance(address _token) external onlyOwner {
-        uint256 amount = IERC20(_token).balanceOf(address(this));
-        TransferHelper.safeTransfer(_token, owner(), amount);
     }
 }

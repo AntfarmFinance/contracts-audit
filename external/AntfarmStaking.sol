@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.10;
+pragma solidity =0.8.10;
 
-import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import "../libraries/TransferHelper.sol";
+import "../libraries/OwnableWithdrawable.sol";
 
 /// @title Antfarm Staking
 /// @author Antfarm team
 /// @notice Allows holders of ATF to stake ATF in order to receive AGT rewards
-contract AntfarmStaking {
-    using SafeERC20 for IERC20;
+contract AntfarmStaking is OwnableWithdrawable {
     address public antfarmToken;
     address public governanceToken;
 
@@ -16,25 +16,19 @@ contract AntfarmStaking {
         uint256 lastRewardPoints;
     }
 
-    uint256 public constant INITIAL_RESERVE = 2 * 10**(6 + 18); // 2M tokens
+    uint256 public constant INITIAL_RESERVE = 1_500_000 * 10**18;
     uint256 public immutable startTime;
-    uint256 public lastAmount = 0;
+    uint256 public lastAmount;
     uint256 private constant MONTH = 2629743;
 
-    uint256 private totalSupply = 0;
-    uint256 private totalRewardPoints = 0;
-    uint256 private unclaimedRewards = 0;
+    uint256 public totalSupply;
+    uint256 private totalRewardPoints;
     uint256 private constant POINT_MULTIPLIER = 1 ether;
     mapping(address => Reward) public rewards;
     mapping(address => uint256) public balanceOf;
 
-    mapping(address => uint256) public totalVestedAmount;
-    mapping(address => uint256) public unvestedAmount;
-
     event Deposit(address sender, uint256 amount, uint256 timestamp);
-    event DepositVested(address sender, uint256 amount, uint256 timestamp);
     event Withdraw(address receiver, uint256 amount, uint256 timestamp);
-    event WithdrawVested(address receiver, uint256 amount, uint256 timestamp);
 
     error NullAmount();
     error AmountTooHigh();
@@ -58,12 +52,11 @@ contract AntfarmStaking {
     }
 
     modifier disburse() {
-        uint256 amount = getAmountToRelease(block.timestamp) - lastAmount;
+        uint256 toDisburse = getAmountToRelease(block.timestamp) - lastAmount;
 
-        if (amount > 0 && totalSupply > 0) {
-            totalRewardPoints += (amount * POINT_MULTIPLIER) / totalSupply;
-            unclaimedRewards += amount;
-            lastAmount = amount;
+        if (toDisburse > 0 && totalSupply > 0) {
+            totalRewardPoints += (toDisburse * POINT_MULTIPLIER) / totalSupply;
+            lastAmount += toDisburse;
         }
 
         _;
@@ -72,7 +65,6 @@ contract AntfarmStaking {
     modifier updateRewards(address _address) {
         uint256 owing = newRewards(_address, totalRewardPoints);
         if (owing > 0) {
-            unclaimedRewards -= owing;
             rewards[_address].reward += owing;
         }
 
@@ -94,72 +86,12 @@ contract AntfarmStaking {
 
         emit Deposit(msg.sender, _amount, block.timestamp);
 
-        IERC20(antfarmToken).safeTransferFrom(
+        TransferHelper.safeTransferFrom(
+            antfarmToken,
             msg.sender,
             address(this),
             _amount
         );
-    }
-
-    function depositVested(address _for, uint256 _amount)
-        external
-        disburse
-        updateRewards(_for)
-    {
-        if (_amount == 0) revert NullAmount();
-        totalVestedAmount[_for] += _amount;
-        totalSupply += _amount;
-        emit DepositVested(_for, _amount, block.timestamp);
-
-        IERC20(antfarmToken).safeTransferFrom(
-            msg.sender,
-            address(this),
-            _amount
-        );
-    }
-
-    /// @notice Withdraw all available ATF vested tokens for `msg.sender`
-    function withdrawVested() external disburse updateRewards(msg.sender) {
-        uint256 amount = _calculateUnvested() - unvestedAmount[msg.sender];
-
-        if (amount == 0) revert NullAmount();
-        _withdrawVested(amount);
-    }
-
-    /// @notice Withdraw a specific amount ATF vested tokens for `msg.sender`
-    function withdrawVested(uint256 _amount)
-        external
-        disburse
-        updateRewards(msg.sender)
-    {
-        uint256 maxAmount = _calculateUnvested() - unvestedAmount[msg.sender];
-        if (_amount > maxAmount) revert AmountTooHigh();
-        _withdrawVested(_amount);
-    }
-
-    function _calculateUnvested() internal view returns (uint256 unvested) {
-        uint256 elapsedTime = block.timestamp - startTime;
-
-        if (elapsedTime > 78 weeks) {
-            elapsedTime = 78 weeks;
-        }
-
-        unvested = (totalVestedAmount[msg.sender] * elapsedTime) / 78 weeks;
-    }
-
-    function _withdrawVested(uint256 _amount) internal {
-        unvestedAmount[msg.sender] += _amount;
-        totalSupply -= _amount;
-        emit WithdrawVested(msg.sender, _amount, block.timestamp);
-        IERC20(antfarmToken).safeTransfer(msg.sender, _amount);
-    }
-
-    function vestedBalanceOf(address _address)
-        external
-        view
-        returns (uint256 balance)
-    {
-        balance = totalVestedAmount[_address] - unvestedAmount[_address];
     }
 
     /// @notice Withdraw all ATF tokens for `msg.sender`
@@ -186,7 +118,7 @@ contract AntfarmStaking {
         balanceOf[msg.sender] -= _amount;
         totalSupply -= _amount;
         emit Withdraw(msg.sender, _amount, block.timestamp);
-        IERC20(antfarmToken).safeTransfer(msg.sender, _amount);
+        TransferHelper.safeTransfer(antfarmToken, msg.sender, _amount);
     }
 
     /// @notice Get the amout of rewards claimable after a disburse
@@ -215,11 +147,10 @@ contract AntfarmStaking {
     /// @notice Claim AGT staking rewards for `msg.sender`
     function claimStakingRewards() external disburse updateRewards(msg.sender) {
         uint256 claimAmount = rewards[msg.sender].reward;
-
         if (claimAmount == 0) revert NullAmount();
 
         rewards[msg.sender].reward = 0;
-        IERC20(governanceToken).safeTransfer(msg.sender, claimAmount);
+        TransferHelper.safeTransfer(governanceToken, msg.sender, claimAmount);
     }
 
     /// @notice Calculates the amount owed on top of Reward.reward
@@ -232,10 +163,7 @@ contract AntfarmStaking {
     {
         uint256 newRewardPoints = _totalRewardPoints -
             rewards[_address].lastRewardPoints;
-        uint256 stakedBalance = balanceOf[_address] +
-            totalVestedAmount[_address] -
-            unvestedAmount[_address];
-        amount = (stakedBalance * newRewardPoints) / POINT_MULTIPLIER;
+        amount = (balanceOf[_address] * newRewardPoints) / POINT_MULTIPLIER;
     }
 
     function getAmountToRelease(uint256 _timestamp)

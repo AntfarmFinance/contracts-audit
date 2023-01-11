@@ -1,17 +1,16 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.10;
+pragma solidity =0.8.10;
 
 interface IAntfarmPairEvents {
-
     /// @notice Emitted when a position's liquidity is removed
     /// @param sender The address that initiated the burn call
     /// @param amount0 The amount of token0 withdrawn
     /// @param amount1 The amount of token1 withdrawn
     /// @param to The address to send token0 & token1
     event Burn(
-        address indexed sender, 
-        uint amount0, 
-        uint amount1, 
+        address indexed sender,
+        uint256 amount0,
+        uint256 amount1,
         address indexed to
     );
 
@@ -19,7 +18,7 @@ interface IAntfarmPairEvents {
     /// @param sender The address that initiated the mint call
     /// @param amount0 Required token0 for the minted liquidity
     /// @param amount1 Required token1 for the minted liquidity
-    event Mint(address indexed sender, uint amount0, uint amount1);
+    event Mint(address indexed sender, uint256 amount0, uint256 amount1);
 
     /// @notice Emitted by the pool for any swaps between token0 and token1
     /// @param sender The address that initiated the swap call
@@ -30,10 +29,10 @@ interface IAntfarmPairEvents {
     /// @param to Address to transfer the swapped amount
     event Swap(
         address indexed sender,
-        uint amount0In,
-        uint amount1In,
-        uint amount0Out,
-        uint amount1Out,
+        uint256 amount0In,
+        uint256 amount1In,
+        uint256 amount0Out,
+        uint256 amount1Out,
         address indexed to
     );
 

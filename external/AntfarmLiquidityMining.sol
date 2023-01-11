@@ -1,208 +1,291 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.10;
+pragma solidity =0.8.10;
 
-import "../interfaces/IERC20.sol";
-import "../interfaces/IAntfarmPosition.sol";
+import "../libraries/OwnableWithdrawable.sol";
 import "../libraries/TransferHelper.sol";
-import "../utils/AntfarmLiquidityMiningErrors.sol";
-import "@openzeppelin/contracts/access/Ownable.sol";
+import "../libraries/math.sol";
+import "../interfaces/IAntfarmToken.sol";
+import "../interfaces/IPointsInterface.sol";
 
-contract AntfarmLiquidityMining is Ownable {
-    address public immutable antfarmPositions;
+/// @title Antfarm Liquidity Mining
+/// @notice A program that rewards Liquidy Providers that don't claim their ATF
+contract AntfarmLiquidityMining is OwnableWithdrawable, Math {
     address public immutable antfarmToken;
-    address public immutable antfarmGovernanceToken;
+    address public immutable governanceToken;
 
-    uint32 public immutable startTime;
-    uint32 public immutable endTime;
-    uint32 public constant START_RATE = 100;
-    uint32 public constant END_RATE = 30;
-    uint128 public constant INITIAL_RESERVE = 2 * 10**6 * 10**18;
+    uint256 public immutable startTime;
+    uint256 public immutable rewardsAmount = 2_000_000 * 10**18;
+    uint256 public immutable periodLength; // 4 weeks
+    uint256 public immutable periods; // 39
+    uint256 public immutable totalWeight;
 
-    mapping(uint256 => uint256) public lastBonusClaim;
-    mapping(address => bool) public pairWhitelist;
+    struct Rewards {
+        uint256 points; // Square root of the ATF sum in Positions
+        uint256 lastRegister;
+    }
 
-    event BonusClaimed(
-        uint256 positionId,
-        uint256 bonusAmount,
-        uint256 governanceAmount
+    mapping(address => Rewards) public rewards;
+    mapping(uint256 => uint256) public totalPointsForPeriod;
+    mapping(address => address) public pointsInterface;
+
+    event Registered(
+        address sender,
+        uint256 period,
+        uint256 amount,
+        uint256 points
     );
 
+    error AlreadyRegistered();
+    error NoAction();
+
     constructor(
-        address _antfarmPositions,
         address _antfarmToken,
-        address _antfarmGovernanceToken
+        address _governanceToken,
+        uint256 _periodLength,
+        uint256 _periods,
+        uint256 _startTime
     ) {
-        require(_antfarmPositions != address(0), "ZERO_ADDRESS");
         require(_antfarmToken != address(0), "ZERO_ADDRESS");
-        require(_antfarmGovernanceToken != address(0), "ZERO_ADDRESS");
-        antfarmPositions = _antfarmPositions;
+        require(_governanceToken != address(0), "ZERO_ADDRESS");
         antfarmToken = _antfarmToken;
-        antfarmGovernanceToken = _antfarmGovernanceToken;
-        startTime = uint32(block.timestamp);
-        endTime = startTime + 94608000; // 3 years in seconds
+        governanceToken = _governanceToken;
+
+        periodLength = _periodLength;
+        periods = _periods;
+        totalWeight = (_periods * (_periods + 1)) / 2;
+
+        startTime = _startTime;
     }
 
-    modifier inTime() {
-        if (block.timestamp < startTime || block.timestamp > endTime) {
-            revert OutOfTimeWindow();
-        }
-        _;
+    function setInterface(address _collection, address _interface)
+        external
+        onlyOwner
+    {
+        pointsInterface[_collection] = _interface;
     }
 
-    function claimBonusGrouped(uint256[] calldata positionIds) external inTime {
-        IAntfarmPosition positionsContract = IAntfarmPosition(antfarmPositions);
-
-        uint256 totalBonus;
-        uint256 totalGovernance;
-
-        for (uint256 i; i < positionIds.length; i++) {
-            IAntfarmPosition.PositionDetails memory position = positionsContract
-                .getPositionDetails(positionIds[i]);
-
-            ensurePositionCanClaim(position);
-
-            if (position.dividend == 0) revert NothingToClaim();
-
-            lastBonusClaim[positionIds[i]] = block.timestamp;
-
-            (uint256 bonusAmount, uint256 governanceAmount) = getBonusAmount(
-                positionIds[i]
-            );
-            totalBonus += bonusAmount;
-            totalGovernance += governanceAmount;
-
-            emit BonusClaimed(positionIds[i], bonusAmount, governanceAmount);
-        }
-
-        if (totalBonus + totalGovernance == 0) revert NothingToClaim();
-        TransferHelper.safeTransfer(antfarmToken, msg.sender, totalBonus);
-        TransferHelper.safeTransfer(
-            antfarmGovernanceToken,
-            msg.sender,
-            totalGovernance
-        );
-    }
-
-    function claimBonus(uint256 positionId) external inTime {
-        // Get the position
-        IAntfarmPosition positionsContract = IAntfarmPosition(antfarmPositions);
-        IAntfarmPosition.PositionDetails memory position = positionsContract
-            .getPositionDetails(positionId);
-
-        ensurePositionCanClaim(position);
-
-        // Register last claim
-        lastBonusClaim[positionId] = block.timestamp;
-        if (position.dividend == 0) revert NothingToClaim();
-
-        // Calculate bonus and governance amounts to send
-        (uint256 bonusAmount, uint256 governanceAmount) = getBonusAmount(
-            position.dividend
-        );
-        if (bonusAmount + governanceAmount == 0) revert NothingToClaim();
-
-        // Send the bonus to the user if any
-        if (bonusAmount > 0) {
-            TransferHelper.safeTransfer(antfarmToken, msg.sender, bonusAmount);
-        }
-
-        // Send governance amount if any
-        if (governanceAmount > 0) {
-            TransferHelper.safeTransfer(
-                antfarmGovernanceToken,
-                msg.sender,
-                governanceAmount
-            );
-        }
-        emit BonusClaimed(positionId, bonusAmount, governanceAmount);
-    }
-
-    function whitelist(address[] memory pairs) external onlyOwner {
-        for (uint256 i; i < pairs.length; i++) {
-            pairWhitelist[pairs[i]] = true;
-        }
-    }
-
-    function unwhitelist(address[] memory pairs) external onlyOwner {
-        for (uint256 i; i < pairs.length; i++) {
-            pairWhitelist[pairs[i]] = false;
-        }
-    }
-
-    function withdrawToken(address _token, uint256 _amount) external onlyOwner {
-        TransferHelper.safeTransfer(_token, owner(), _amount);
-    }
-
-    function withdrawTotalTokenBalance(address _token) external onlyOwner {
-        uint256 amount = IERC20(_token).balanceOf(address(this));
-        TransferHelper.safeTransfer(_token, owner(), amount);
-    }
-
-    function getBonusAmount(uint256 dividendAmount)
+    function getClaimableAmounts(address _address)
         public
         view
-        returns (uint256 bonusAmount, uint256 governanceAmount)
+        returns (uint256 amountATF, uint256 amountAGT)
     {
-        uint256 timeAmount = getBonusRateFromTime(dividendAmount);
-        uint256 reserveBonusAmount = getAmountRateFromReserve(
-            dividendAmount,
-            antfarmToken
-        );
-        bonusAmount = timeAmount < reserveBonusAmount
-            ? timeAmount
-            : reserveBonusAmount;
+        Rewards memory reward = rewards[_address];
 
-        uint256 reserveGovernanceAmount = getAmountRateFromReserve(
-            dividendAmount,
-            antfarmGovernanceToken
-        );
-        governanceAmount = timeAmount < reserveGovernanceAmount
-            ? timeAmount
-            : reserveGovernanceAmount;
+        amountAGT =
+            (getPeriodReward(reward.lastRegister) * reward.points) /
+            totalPointsForPeriod[reward.lastRegister];
+
+        uint256 currentPeriod = getElapsedPeriods();
+        uint256 amountToBurn;
+        if (reward.lastRegister == currentPeriod - 1) {
+            uint256 elapsedSeconds = (block.timestamp - startTime) %
+                periodLength;
+
+            uint256 slashingPeriod = (periodLength * 3) / 4;
+
+            if (elapsedSeconds < slashingPeriod) {
+                // Calculate the amount to be burned
+                amountToBurn =
+                    (amountAGT * (slashingPeriod - elapsedSeconds) * 50) /
+                    (100 * slashingPeriod);
+            }
+        }
+        amountATF = amountAGT - amountToBurn;
     }
 
-    function getBonusRateFromTime(uint256 dividendAmount)
+    function sendRewards(address _address) internal {
+        (uint256 amountATF, uint256 amountAGT) = getClaimableAmounts(_address);
+
+        TransferHelper.safeTransfer(antfarmToken, _address, amountATF);
+        TransferHelper.safeTransfer(governanceToken, _address, amountAGT);
+
+        if (amountATF < amountAGT) {
+            IAntfarmToken(antfarmToken).burn(amountAGT - amountATF);
+        }
+    }
+
+    struct RegisterCollection {
+        address collection;
+        uint256[] ids;
+    }
+
+    function registerPositions(RegisterCollection[] calldata collections)
+        external
+    {
+        Rewards memory reward = rewards[msg.sender];
+
+        uint256 currentPeriod = getElapsedPeriods();
+        if (reward.lastRegister == currentPeriod) revert AlreadyRegistered();
+
+        bool sentRewards;
+        if (reward.points > 0) {
+            sentRewards = true;
+            sendRewards(msg.sender);
+        }
+
+        uint256 rawPoints;
+        uint256 collectionsLength = collections.length;
+
+        for (uint256 i; i < collectionsLength; ++i) {
+            rawPoints =
+                rawPoints +
+                IPointsInterface(pointsInterface[collections[i].collection])
+                    .savePoints(currentPeriod, msg.sender, collections[i].ids);
+        }
+
+        if (rawPoints > 0) {
+            uint256 points = sqrt(rawPoints);
+            if (reward.lastRegister == currentPeriod - 1) {
+                uint256 minPoints = min(reward.points, points);
+                uint256 bonus = ((minPoints * 150) / 1000);
+                points = points + bonus;
+            }
+
+            rewards[msg.sender] = Rewards(points, currentPeriod);
+            emit Registered(msg.sender, currentPeriod, rawPoints, points);
+            totalPointsForPeriod[currentPeriod] += points;
+        } else {
+            if (!sentRewards) revert NoAction();
+            rewards[msg.sender] = Rewards(0, currentPeriod);
+        }
+    }
+
+    function getElapsedPeriods()
         internal
         view
-        returns (uint256 bonusAmount)
+        returns (uint256 elapsedPeriods)
     {
-        uint256 maxBonus = (dividendAmount * START_RATE) / 1000;
-        uint256 minBonus = (dividendAmount * END_RATE) / 1000;
-        uint256 timeElapsed = (1000 * (block.timestamp - startTime)) /
-            (endTime - startTime);
-
-        bonusAmount = (timeElapsed *
-            minBonus +
-            maxBonus -
-            (timeElapsed * maxBonus));
+        elapsedPeriods = (block.timestamp - startTime) / periodLength + 1;
     }
 
-    function getAmountRateFromReserve(
-        uint256 dividendAmount,
-        address tokenAddress
-    ) internal view returns (uint256 bonusAmount) {
-        uint256 maxBonus = (dividendAmount * START_RATE) / 1000;
-        uint256 minBonus = (dividendAmount * END_RATE) / 1000;
-        uint256 reserve = IERC20(tokenAddress).balanceOf(address(this));
-        uint256 reservePercentage = (1000 * reserve) / INITIAL_RESERVE;
-
-        bonusAmount =
-            ((reservePercentage * (maxBonus - minBonus)) / 1000) +
-            minBonus;
-    }
-
-    function ensurePositionCanClaim(
-        IAntfarmPosition.PositionDetails memory position
-    ) internal view {
-        // Verify if the sender is the owner
-        if (msg.sender != position.owner) revert NotOwner();
-
-        // Verify the pair is whitelisted
-        if (!pairWhitelist[position.pair]) revert PairNotWhitelisted();
-
-        // Verify it hasn't claimed in the last 28 days
-        if (lastBonusClaim[position.id] > block.timestamp - (28 * 86400)) {
-            revert AlreadyClaimed();
+    function getPeriodReward(uint256 periodNumber)
+        internal
+        view
+        returns (uint256 reward)
+    {
+        if (periodNumber > 0 && periodNumber < periods) {
+            reward =
+                (rewardsAmount * (periods + 1 - periodNumber)) /
+                totalWeight;
+        } else {
+            reward = 0;
         }
+    }
+
+    struct PeriodDetails {
+        uint256 lastPeriod;
+        uint256 lastRewardsAmount;
+        uint256 endTimestamp;
+        uint256 permilleBurn;
+        uint256 currentPeriod;
+        uint256 currentRewardAmount;
+    }
+
+    function getPeriodDetails()
+        external
+        view
+        returns (PeriodDetails memory periodDetails)
+    {
+        uint256 currentPeriod = getElapsedPeriods();
+        uint256 lastPeriod = currentPeriod - 1;
+        uint256 lastRewardsAmount = getPeriodReward(lastPeriod);
+        uint256 endTimestamp = startTime + (periodLength * currentPeriod);
+
+        uint256 elapsedSeconds = (block.timestamp - startTime) % periodLength;
+        uint256 slashingPeriod = (periodLength * 3) / 4;
+        uint256 permilleBurn;
+        if (elapsedSeconds < slashingPeriod) {
+            permilleBurn =
+                ((slashingPeriod - elapsedSeconds) * 500) /
+                slashingPeriod;
+        } else {
+            permilleBurn = 0;
+        }
+
+        uint256 currentRewardAmount = getPeriodReward(currentPeriod);
+
+        periodDetails = PeriodDetails(
+            lastPeriod,
+            lastRewardsAmount,
+            endTimestamp,
+            permilleBurn,
+            currentPeriod,
+            currentRewardAmount
+        );
+    }
+
+    struct UserDetails {
+        uint256 lastPeriodParticipation;
+        uint256 antfarmTokenToClaim;
+        uint256 governanceTokenToClaim;
+        uint256 maxRewardsCurrentPeriod;
+    }
+
+    function getUserDetails(
+        address _address,
+        RegisterCollection[] calldata collections
+    ) external view returns (UserDetails memory userDetails) {
+        uint256 currentPeriod = getElapsedPeriods();
+
+        Rewards memory reward = rewards[_address];
+        uint256 lastPeriodParticipation = reward.lastRegister;
+
+        uint256 antfarmTokenToClaim;
+        uint256 governanceTokenToClaim;
+        if (
+            lastPeriodParticipation > 0 &&
+            lastPeriodParticipation != currentPeriod
+        ) {
+            (antfarmTokenToClaim, governanceTokenToClaim) = getClaimableAmounts(
+                _address
+            );
+        } else {
+            antfarmTokenToClaim = 0;
+            governanceTokenToClaim = 0;
+        }
+
+        uint256 maxRewardsCurrentPeriod;
+        if (lastPeriodParticipation == currentPeriod) {
+            maxRewardsCurrentPeriod =
+                (getPeriodReward(currentPeriod) * reward.points) /
+                totalPointsForPeriod[currentPeriod];
+        } else {
+            uint256 rawPoints;
+            uint256 collectionsLength = collections.length;
+
+            for (uint256 i; i < collectionsLength; ++i) {
+                rawPoints =
+                    rawPoints +
+                    IPointsInterface(pointsInterface[collections[i].collection])
+                        .getPoints(
+                            currentPeriod,
+                            msg.sender,
+                            collections[i].ids
+                        );
+            }
+
+            if (rawPoints > 0) {
+                uint256 points = sqrt(rawPoints);
+                if (reward.lastRegister == currentPeriod - 1) {
+                    uint256 minPoints = min(reward.points, points);
+                    uint256 bonus = ((minPoints * 150) / 1000);
+                    points = points + bonus;
+                }
+                uint256 totalPoints = totalPointsForPeriod[currentPeriod] +
+                    points;
+                maxRewardsCurrentPeriod =
+                    (getPeriodReward(currentPeriod) * points) /
+                    totalPoints;
+            } else {
+                maxRewardsCurrentPeriod = 0;
+            }
+        }
+
+        userDetails = UserDetails(
+            lastPeriodParticipation,
+            antfarmTokenToClaim,
+            governanceTokenToClaim,
+            maxRewardsCurrentPeriod
+        );
     }
 }
