@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: BUSL-1.1
-pragma solidity ^0.8.10;
+pragma solidity =0.8.10;
 
 import "../interfaces/IERC20.sol";
 import "../interfaces/IAntfarmFactory.sol";
 import "../interfaces/IAntfarmPair.sol";
 import "../interfaces/IAntfarmAtfPair.sol";
+import "../interfaces/IAntfarmOracle.sol";
 import "../interfaces/IAntfarmToken.sol";
 import "../libraries/math.sol";
 import "../libraries/UQ112x112.sol";
@@ -18,28 +19,28 @@ contract AntfarmPair is IAntfarmPair, ReentrancyGuard, Math {
     using UQ112x112 for uint224;
 
     /// @inheritdoc IAntfarmPairState
-    address public immutable override factory;
+    address public immutable factory;
 
     /// @inheritdoc IAntfarmPairState
-    address public override token0;
+    address public token0;
 
     /// @inheritdoc IAntfarmPairState
-    address public override token1;
+    address public token1;
 
     /// @inheritdoc IAntfarmPairState
-    uint16 public override fee;
+    uint16 public fee;
 
     /// @inheritdoc IAntfarmPairState
-    uint256 public override totalSupply;
+    uint256 public totalSupply;
 
     /// @inheritdoc IAntfarmPairState
-    uint256 public override antfarmTokenReserve;
+    uint256 public antfarmTokenReserve;
 
     /// @inheritdoc IAntfarmPair
-    address public override antfarmToken;
+    address public antfarmToken;
 
     /// @inheritdoc IAntfarmPair
-    AntfarmOracle public override antfarmOracleToken;
+    address public antfarmOracle;
 
     uint112 private reserve0;
     uint112 private reserve1;
@@ -86,7 +87,7 @@ contract AntfarmPair is IAntfarmPair, ReentrancyGuard, Math {
         address _token1,
         uint16 _fee,
         address _antfarmToken
-    ) external override {
+    ) external {
         if (msg.sender != factory) revert SenderNotFactory();
         token0 = _token0;
         token1 = _token1;
@@ -180,7 +181,7 @@ contract AntfarmPair is IAntfarmPair, ReentrancyGuard, Math {
         uint256 amount0Out,
         uint256 amount1Out,
         address to
-    ) external override nonReentrant {
+    ) external nonReentrant {
         if (amount0Out == 0 && amount1Out == 0) {
             revert InsufficientOutputAmount();
         }
@@ -254,7 +255,7 @@ contract AntfarmPair is IAntfarmPair, ReentrancyGuard, Math {
     }
 
     /// @inheritdoc IAntfarmPairActions
-    function skim(address to) external override nonReentrant {
+    function skim(address to) external nonReentrant {
         address _token0 = token0; // gas savings
         address _token1 = token1; // gas savings
         TransferHelper.safeTransfer(
@@ -270,7 +271,7 @@ contract AntfarmPair is IAntfarmPair, ReentrancyGuard, Math {
     }
 
     /// @inheritdoc IAntfarmPairActions
-    function sync() external override nonReentrant {
+    function sync() external nonReentrant {
         _update(
             IERC20(token0).balanceOf(address(this)),
             IERC20(token1).balanceOf(address(this))
@@ -288,18 +289,18 @@ contract AntfarmPair is IAntfarmPair, ReentrancyGuard, Math {
     }
 
     /// @inheritdoc IAntfarmPair
-    function updateOracle() public override {
+    function updateOracle() public {
         address actualOracle;
         uint112 maxReserve;
-        if (address(antfarmOracleToken) != address(0)) {
-            actualOracle = antfarmOracleToken.pair();
+        if (antfarmOracle != address(0)) {
+            actualOracle = IAntfarmOracle(antfarmOracle).pair();
             (maxReserve, , ) = IAntfarmAtfPair(actualOracle).getReserves();
         }
 
         address bestOracle = scanOracles(maxReserve);
         if (bestOracle == address(0)) revert NoOracleFound();
-        if (bestOracle == address(antfarmOracleToken)) revert NoBetterOracle();
-        antfarmOracleToken = AntfarmOracle(bestOracle);
+        if (bestOracle == antfarmOracle) revert NoBetterOracle();
+        antfarmOracle = bestOracle;
     }
 
     /// @inheritdoc IAntfarmPairDerivedState
@@ -324,14 +325,14 @@ contract AntfarmPair is IAntfarmPair, ReentrancyGuard, Math {
         uint256 amount0In,
         uint256 amount1Out,
         uint256 amount1In
-    ) public view override returns (uint256 feeToPay) {
-        if (antfarmOracleToken.token1() == token0) {
-            feeToPay = antfarmOracleToken.consult(
+    ) public view returns (uint256 feeToPay) {
+        if (IAntfarmOracle(antfarmOracle).token1() == token0) {
+            feeToPay = IAntfarmOracle(antfarmOracle).consult(
                 token0,
                 ((amount0In + amount0Out) * fee) / MINIMUM_LIQUIDITY
             );
         } else {
-            feeToPay = antfarmOracleToken.consult(
+            feeToPay = IAntfarmOracle(antfarmOracle).consult(
                 token1,
                 ((amount1In + amount1Out) * fee) / MINIMUM_LIQUIDITY
             );
@@ -404,7 +405,7 @@ contract AntfarmPair is IAntfarmPair, ReentrancyGuard, Math {
 
     function setOracleInstance() internal {
         updateOracle();
-        if (address(antfarmOracleToken) == address(0)) {
+        if (antfarmOracle == address(0)) {
             revert NoOracleFound();
         }
     }

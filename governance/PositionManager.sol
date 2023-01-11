@@ -1,152 +1,136 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.10;
+pragma solidity =0.8.10;
 
 import "../interfaces/IAntfarmPosition.sol";
 import "../interfaces/IERC20.sol";
 import "../libraries/TransferHelper.sol";
 import "../utils/PositionManagerErrors.sol";
-import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/token/ERC721/extensions/IERC721Enumerable.sol";
 import "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
+import "hardhat/console.sol";
 
-/// @title DAO positions manager
-/// @author Antfarm team
-/// @notice Manages DAO's position and decides reward fee split allocation
-contract PositionManager is Ownable {
+/// @title Position Manager
+/// @notice Let anyone create a set of rules to automate the dividends claiming
+contract PositionManager {
     address public immutable antfarmPositions;
     address public immutable antfarmToken;
 
-    address[5] public payees;
-    uint256[5] public shares;
-    uint256 public totalShares;
-    uint256 public executorShare;
+    struct Rules {
+        address[] payees;
+        uint256[] shares;
+        uint256 executorShare; // 0-1000
+    }
 
-    constructor(
-        address _antfarmPositions,
-        address _antfarmToken,
-        uint256 _executorShare
-    ) {
+    mapping(address => Rules) public rules;
+
+    event UpdatedRules(address indexed sender, Rules rules);
+
+    error ExecutorShareTooHigh();
+    error ZeroAddress();
+    error WrongTotalAllocation();
+    error WrongOwnerForPosition();
+    error WrongNumOfShares();
+
+    constructor(address _antfarmPositions, address _antfarmToken) {
+        require(_antfarmPositions != address(0), "NULL_POSITIONS_ADDRESS");
+        require(_antfarmToken != address(0), "NULL_ATF_ADDRESS");
         antfarmPositions = _antfarmPositions;
         antfarmToken = _antfarmToken;
-        executorShare = _executorShare;
     }
 
-    /// @notice Check if an address is part of payees
-    /// @param _address address to check
-    /// @return found
-    function checkAllocation(address _address)
-        public
+    function getRules(address _address)
+        external
         view
-        returns (bool found)
+        returns (Rules memory rule)
     {
-        for (uint8 i; i < 5; i++) {
-            if (payees[i] == _address) {
-                found = true;
-            }
-        }
+        rule = rules[_address];
     }
 
-    /// @notice Update allocation rate for transaction executor
-    /// @param _share executor share
-    function updateExecutorShare(uint256 _share) external onlyOwner {
-        executorShare = _share;
-    }
-
-    /// @notice Update allocation rate for a specific payee
-    /// @param _address Address for the payee
-    /// @param _points allocation points
-    function updateAllocation(address _address, uint256 _points)
-        public
-        onlyOwner
-    {
-        bool hasAllocation = checkAllocation(_address);
-        if (!hasAllocation && _points == 0) revert NullNewAllocation();
-        uint256 oldTotalShares = totalShares;
-
-        for (uint8 i; i < 5; i++) {
-            address payee = payees[i];
-            uint256 share = shares[i];
-
-            if (payee == _address) {
-                if (share == _points) revert SameAllocation();
-                uint256 oldShares = share;
-                shares[i] = _points;
-                totalShares = totalShares + _points - oldShares;
-                break;
-            } else if (payee != _address && share == 0 && !hasAllocation) {
-                payees[i] = _address;
-                shares[i] = _points;
-                totalShares += _points;
-                break;
-            }
-        }
-        if (oldTotalShares == totalShares) revert SameAllocation();
-    }
-
-    /// @notice Update allocation rate for all payees
-    /// @param _addresses Addresses for payees
-    /// @param _points allocation points
-    function updateAllocations(
-        address[] memory _addresses,
-        uint256[] memory _points
+    function setRules(
+        address[] calldata _payees,
+        uint256[] calldata _shares,
+        uint256 _executorShare
     ) external {
-        if (_addresses.length != _points.length) revert DifferentInputLengths();
-        if (_addresses.length > 10) revert MaxInputs();
+        Rules memory _rules = Rules(_payees, _shares, _executorShare);
+        rules[msg.sender] = _rules;
 
-        for (uint8 i; i < _addresses.length; i++) {
-            updateAllocation(_addresses[i], _points[i]);
+        if (_executorShare > 500) revert ExecutorShareTooHigh();
+
+        uint256 numPayees = _payees.length;
+        if (numPayees != _shares.length) revert WrongNumOfShares();
+
+        uint256 totalAllocation;
+        for (uint256 i; i < numPayees; ++i) {
+            if (_payees[i] == address(0)) revert ZeroAddress();
+            totalAllocation = totalAllocation + _shares[i];
+        }
+
+        if (totalAllocation != 1000) revert WrongTotalAllocation();
+
+        emit UpdatedRules(msg.sender, _rules);
+    }
+
+    struct PositionsPerOwner {
+        uint256[] positionIds;
+        address owner;
+    }
+
+    function claimAndSplitProfits(
+        PositionsPerOwner[] calldata positionsPerOwner
+    ) external {
+        uint256 positionsPerOwnerLength = positionsPerOwner.length;
+
+        for (uint256 i; i < positionsPerOwnerLength; ++i) {
+            uint256 numPositions = positionsPerOwner[i].positionIds.length;
+
+            uint256[] memory ownerPositions = IAntfarmPosition(antfarmPositions)
+                .getPositionsIds(positionsPerOwner[i].owner);
+            uint256 ownerPositionsLength = ownerPositions.length;
+
+            bool found;
+            for (uint256 j; j < numPositions; ++j) {
+                found = false;
+                for (uint256 k; k < ownerPositionsLength; ++k) {
+                    if (
+                        positionsPerOwner[i].positionIds[j] == ownerPositions[k]
+                    ) {
+                        found = true;
+                    }
+                }
+                if (!found) revert WrongOwnerForPosition();
+            }
+
+            uint256 amount = IAntfarmPosition(antfarmPositions)
+                .claimDividendGrouped(positionsPerOwner[i].positionIds);
+
+            splitProfits(positionsPerOwner[i].owner, amount);
         }
     }
 
     /// @notice Split and send rewards among payees
-    function splitProfits() public {
-        uint256 sharesIncludingExecutor = totalShares + executorShare;
-        uint256 amountTosplit = IERC20(antfarmToken).balanceOf(address(this));
-        uint256 amount;
+    function splitProfits(address owner, uint256 amountToSplit) internal {
+        Rules memory ownerRules = rules[owner];
 
-        for (uint8 i; i < 5; i++) {
-            amount = (amountTosplit * shares[i]) / sharesIncludingExecutor;
+        uint256 sharesIncludingExecutor = 1000 + ownerRules.executorShare;
+
+        uint256 amount;
+        uint256 payeesLength = ownerRules.payees.length;
+        for (uint256 i; i < payeesLength; ++i) {
+            amount =
+                (amountToSplit * ownerRules.shares[i]) /
+                sharesIncludingExecutor;
             if (amount > 0) {
-                TransferHelper.safeTransfer(antfarmToken, payees[i], amount);
+                TransferHelper.safeTransfer(
+                    antfarmToken,
+                    ownerRules.payees[i],
+                    amount
+                );
             }
         }
 
-        amount = (amountTosplit * executorShare) / sharesIncludingExecutor;
+        amount =
+            (amountToSplit * ownerRules.executorShare) /
+            sharesIncludingExecutor;
         TransferHelper.safeTransfer(antfarmToken, msg.sender, amount);
-    }
-
-    /// @notice Claim a specific DAO position rewards & split it among the payees
-    /// @param _positionIds Position ID
-    function claimAndSplitProfits(uint256[] memory _positionIds) external {
-        IAntfarmPosition(antfarmPositions).claimDividendGrouped(_positionIds);
-        splitProfits();
-    }
-
-    function withdrawPosition(uint256 _positionId) internal {
-        IERC721Enumerable(antfarmPositions).transferFrom(
-            address(this),
-            msg.sender,
-            _positionId
-        );
-    }
-
-    /// @notice Transfer DAO positions to the governance contract
-    /// @param _positionIds Positions ID
-    function withdrawPositions(uint256[] memory _positionIds)
-        external
-        onlyOwner
-    {
-        for (uint8 i; i < _positionIds.length; i++) {
-            withdrawPosition(_positionIds[i]);
-        }
-    }
-
-    function onERC721Received(
-        address, // operator,
-        address, // from,
-        uint256, // tokenId,
-        bytes calldata // data
-    ) external pure returns (bytes4) {
-        return IERC721Receiver.onERC721Received.selector;
     }
 }

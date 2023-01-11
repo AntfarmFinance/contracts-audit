@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.10;
+pragma solidity =0.8.10;
 
 import "../interfaces/IAntfarmPair.sol";
 import "../interfaces/IAntfarmPosition.sol";
@@ -404,10 +404,20 @@ contract AntfarmPosition is IAntfarmPosition, ERC721Enumerable {
     }
 
     function setDelegate(uint256 positionId, address delegate)
-        external
+        public
         isOwner(positionId)
     {
         positions[positionId].delegate = delegate;
+    }
+
+    function setDelegates(uint256[] calldata positionIds, address delegate)
+        external
+    {
+        uint256 numPositions = positionIds.length;
+
+        for (uint256 i; i < numPositions; ++i) {
+            setDelegate(positionIds[i], delegate);
+        }
     }
 
     function getPositionsDetails(uint256[] calldata positionIds)
@@ -712,8 +722,8 @@ contract AntfarmPosition is IAntfarmPosition, ERC721Enumerable {
                                 )
                             ),
                             token0 == antfarmToken
-                                ? hex"bb047f0432586e955a24c292650146393ca9c8c38de910022cc41bafaa19fc7a" // AtfPair init code hash
-                                : hex"33b71a7c8098c2a6bbeb2408487b6fe6a6808cfb49c903d03b5523561f82f8ae" // Pair init code hash
+                                ? hex"b174de46ec9038ead3d74ed04c79d4885d8e642175833c4da037d5e052492e5b" // AtfPair init code hash
+                                : hex"2f47d72b208014a5ba4f32371ac96dd421a39152dcaf104e8232b6c9f1a92280" // Pair init code hash
                         )
                     )
                 )

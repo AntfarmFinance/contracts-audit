@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.10;
+pragma solidity =0.8.10;
 
 interface IFlashloaner {
     function flashloan(uint256 amount, bytes calldata data) external;

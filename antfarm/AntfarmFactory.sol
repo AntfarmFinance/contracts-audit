@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.10;
+pragma solidity =0.8.10;
 
 import "./AntfarmPair.sol";
 import "./AntfarmAtfPair.sol";
@@ -8,26 +8,14 @@ import "../utils/AntfarmFactoryErrors.sol";
 /// @title Antfarm Factory
 /// @notice The Factory is used to create new Pair contracts for each unique ERC20 token pair
 contract AntfarmFactory is IAntfarmFactory {
-    uint16[8] public override possibleFees = [
-        10,
-        50,
-        100,
-        150,
-        250,
-        500,
-        750,
-        1000
-    ];
-    address[] public override allPairs;
-    address public override antfarmToken;
+    uint16[8] public possibleFees = [10, 50, 100, 150, 250, 500, 750, 1000];
+    address[] public allPairs;
+    address public antfarmToken;
 
     mapping(address => mapping(address => mapping(uint16 => address)))
-        public
-        override getPair;
+        public getPair;
 
-    mapping(address => mapping(address => uint16[8]))
-        public
-        override feesForPair;
+    mapping(address => mapping(address => uint16[8])) public feesForPair;
 
     constructor(address _antfarmToken) {
         require(_antfarmToken != address(0), "NULL_ATF_ADDRESS");
@@ -49,14 +37,30 @@ contract AntfarmFactory is IAntfarmFactory {
 
     /// @notice Get total number of Antfarm Pairs
     /// @return uint Number of created pairs
-    function allPairsLength() external view override returns (uint256) {
+    function allPairsLength() public view returns (uint256) {
         return allPairs.length;
     }
 
-    /// @notice Get all Antfarm Pairs addresses
-    /// @return address[] Addresses of created pairs
-    function getAllPairs() external view returns (address[] memory) {
-        return allPairs;
+    /// @notice Get Antfarm Pairs addresses
+    /// @param startIndex Index of the first pair to query
+    /// @param numOfPairs Number of pairs to be queried
+    /// @return pairs Addresses of created pairs
+    /// @return newIndex New index for chained calls
+    function getPairs(uint256 startIndex, uint256 numOfPairs)
+        external
+        view
+        returns (address[] memory pairs, uint256 newIndex)
+    {
+        if (numOfPairs > allPairsLength() - startIndex) {
+            numOfPairs = allPairsLength() - startIndex;
+        }
+
+        pairs = new address[](numOfPairs);
+        for (uint256 i; i < numOfPairs; ++i) {
+            pairs[i] = allPairs[startIndex + i];
+        }
+
+        newIndex = startIndex + numOfPairs;
     }
 
     /// @notice Get all possible fees
@@ -74,7 +78,7 @@ contract AntfarmFactory is IAntfarmFactory {
         address tokenA,
         address tokenB,
         uint16 fee
-    ) external override returns (address) {
+    ) external returns (address) {
         uint16 feeIndex = validateFee(fee);
         if (tokenA == tokenB) revert IdenticalAddresses();
         address token0;

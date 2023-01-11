@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.10;
+pragma solidity =0.8.10;
 
+import "../antfarm/AntfarmOracle.sol";
 import "./IAntfarmBase.sol";
 
 interface IAntfarmAtfPair is IAntfarmBase {
@@ -14,7 +15,7 @@ interface IAntfarmAtfPair is IAntfarmBase {
 
     /// @notice The Oracle instance associated to the AntfarmPair
     /// @return AntfarmOracle Oracle instance
-    function antfarmOracle() external view returns (AntfarmOracle);
+    function antfarmOracle() external view returns (address);
 
     /// @notice Average token0 price depending on the AntfarmOracle's period
     /// @return uint token0 Average price

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.10;
+pragma solidity =0.8.10;
 
 import "./IAntfarmBase.sol";
 
@@ -19,7 +19,7 @@ interface IAntfarmPair is IAntfarmBase {
 
     /// @notice The Oracle instance used to compute swap's fees
     /// @return AntfarmOracle Oracle instance
-    function antfarmOracleToken() external view returns (AntfarmOracle);
+    function antfarmOracle() external view returns (address);
 
     /// @notice Calcul fee to pay
     /// @param amount0Out The token0 amount going out of the pool

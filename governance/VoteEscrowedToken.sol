@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.10;
+pragma solidity =0.8.10;
 
 import "@openzeppelin/contracts/token/ERC20/extensions/ERC20Votes.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
@@ -23,9 +23,8 @@ contract VoteEscrowedToken is ERC20Votes, Ownable {
     }
 
     address public rewardToken;
-    uint256 private rewardTokenReserve = 0;
-    uint256 private totalRewardPoints = 0;
-    uint256 private unclaimedRewards = 0;
+    uint256 private rewardTokenReserve;
+    uint256 private totalRewardPoints;
     uint256 private constant POINT_MULTIPLIER = 1 ether;
 
     mapping(address => Lock) public locks;
@@ -44,7 +43,9 @@ contract VoteEscrowedToken is ERC20Votes, Ownable {
         ERC20("Voting Escrow Antfarm Governance Token", "veAGT")
         ERC20Permit("VotingEscrowGovernanceToken")
     {
+        require(_governanceToken != address(0), "NULL_AGT_ADDRESS");
         governanceToken = _governanceToken;
+        require(_rewardToken != address(0), "NULL_REWARD_ADDRESS");
         rewardToken = _rewardToken;
         locktime = 4 weeks;
     }
@@ -56,7 +57,6 @@ contract VoteEscrowedToken is ERC20Votes, Ownable {
         if (amount > 0) {
             totalRewardPoints += (amount * POINT_MULTIPLIER) / totalSupply();
             rewardTokenReserve += amount;
-            unclaimedRewards += amount;
         }
 
         _;
@@ -66,7 +66,6 @@ contract VoteEscrowedToken is ERC20Votes, Ownable {
         // Update rewards
         uint256 owing = newRewards(_address, totalRewardPoints);
         if (owing > 0) {
-            unclaimedRewards -= owing;
             locks[_address].reward += owing;
         }
 
